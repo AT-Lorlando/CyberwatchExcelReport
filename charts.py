@@ -27,7 +27,7 @@ class ChartGenerator:
         "P1": "#F8696B",  # Red
     }
 
-    def __init__(self, df, path):
+    def __init__(self, df, old_dfs, path):
         """
         Initialize the ChartGenerator with a DataFrame and output path.
 
@@ -35,6 +35,7 @@ class ChartGenerator:
         :param path: str, path to save the generated charts
         """
         self.df = df
+        self.old_dfs = old_dfs
         self.path = path
 
     def _normalize(self, fig):
