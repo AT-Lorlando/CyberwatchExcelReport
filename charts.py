@@ -1,10 +1,7 @@
 import plotly.express as px
 import plotly.io as pio
 import pandas as pd
-
-
-# headers : Published Date;Last Reviewed Date;Domain;Surface;Server;CVE Code;CVSS Score;CVSS Temporal Score;CVSS Environmental Score;CVSS Computed Score;Criticity;Component;Product;Version;Update;Score EPSS;Maturity;Content;Vector;Environmental Vector;Temporal Vector;CWE Code;Related CWEs;Related CAPECs;Related ATK;Cisa Reference;CertFR References
-# The headers are the columns of the CSV file
+import os
 
 
 class ChartGenerator:
@@ -15,9 +12,9 @@ class ChartGenerator:
         "C2": "#FABF8F",  # Orange
         "C3": "#FFE575",  # Yellow
         "C4": "#00B050",  # Green
-        "C0": "#5A8AC6",  # Blue
+        "C5": "#5A8AC6",  # Blue
     }
-    CRITICITY_ORDER = ["C0", "C4", "C3", "C2", "C1"]
+    CRITICITY_ORDER = ["C5", "C4", "C3", "C2", "C1"]
     PRIORITY_COLORS = {
         "P6": "#5A8AC6",  # Blue (default)
         "P5": "#8fafd8",  # Blue (default)
@@ -37,6 +34,12 @@ class ChartGenerator:
         self.df = df
         self.old_dfs = old_dfs
         self.path = path
+        # create the output directory if it doesn't exist
+        if self.path:
+            try:
+                os.makedirs(self.path)
+            except FileExistsError:
+                pass
 
     def _normalize(self, fig):
         """Normalize the layout of the figure."""
@@ -140,9 +143,11 @@ class ChartGenerator:
         path = self._save_figure(fig, f"cve_by_{'_'.join(group_columns)}_chart.png")
         return path
 
-    def generate_mean_cvss_by_group_chart(self, group_column):
-        """Generate and save a bar chart of the average CVSS computed score per domain."""
-        required_columns = [group_column, "CVSS Computed Score"]
+    def generate_mean_cvss_by_group_chart(
+        self, group_column, score_col="CVSS Computed Score"
+    ):
+        """Generate and save a bar chart of the average score per domain."""
+        required_columns = [group_column, score_col]
         if not self._has_required_columns(required_columns):
             print(
                 f"Missing required columns for mean CVSS by domain chart: {required_columns}"
@@ -150,9 +155,7 @@ class ChartGenerator:
             return None
 
         scores = (
-            self.df.groupby(group_column)["CVSS Computed Score"]
-            .mean()
-            .sort_values(ascending=False)
+            self.df.groupby(group_column)[score_col].mean().sort_values(ascending=False)
         )
         scores_df = pd.DataFrame(
             {group_column: scores.index, "Average Score": scores.values}
@@ -162,7 +165,7 @@ class ChartGenerator:
             scores_df,
             x=group_column,
             y="Average Score",
-            title=f"Average CVSS Computed Score per {group_column}",
+            title=f"Average {score_col} per {group_column}",
         )
         fig.update_yaxes(range=[0, 10])
         self._normalize(fig)
@@ -259,28 +262,43 @@ class ChartGenerator:
             self.df.groupby("Published Date").size().reset_index(name="Number of CVEs")
         )
         cve_by_date_df = pd.DataFrame(cve_by_date)
-        # drop "Unknown" values
         cve_by_date_df = cve_by_date_df[cve_by_date_df["Published Date"] != "Unknown"]
-        # date = YYYY-MM-DD
         # Group by year-mm to simplify the chart
-        cve_by_date_df["Published Date"] = (
-            cve_by_date_df["Published Date"].str.split("-").str[0]
-            + "-"
-            + cve_by_date_df["Published Date"].str.split("-").str[1]
-        )
-        cve_by_date_df = cve_by_date_df.groupby("Published Date").sum().reset_index()
+        # cve_by_date_df["Published Date"] = (
+        #     cve_by_date_df["Published Date"].astype(str).str.split("-").str[0]
+        #     + "/"
+        #     + cve_by_date_df["Published Date"].astype(str).str.split("-").str[1]
+        # )
+        # cve_by_date_df = cve_by_date_df.groupby("Published Date").cumsum().reset_index()
 
-        # smooth the line
-        cve_by_date_df["Number of CVEs"] = (
-            cve_by_date_df["Number of CVEs"].rolling(window=2).mean()
+        # # smooth the line
+        # cve_by_date_df["Number of CVEs"] = (
+        #     cve_by_date_df["Number of CVEs"].rolling(window=2).mean()
+        # )
+        # fig = px.line(
+        #     cve_by_date_df,
+        #     x="Published Date",
+        #     y="Number of CVEs",
+        #     title="Number of CVEs by Date",
+        # )
+
+        cve_by_date_df["Published Date"] = pd.to_datetime(
+            cve_by_date_df["Published Date"]
         )
+
+        # Trier les données par date
+        cve_by_date_df = cve_by_date_df.sort_values("Published Date")
+
+        # Calculer la somme cumulative des CVEs
+        cve_by_date_df["Cumulative CVEs"] = cve_by_date_df["Number of CVEs"].cumsum()
+
+        # Créer le graphique
         fig = px.line(
             cve_by_date_df,
             x="Published Date",
-            y="Number of CVEs",
-            title="Number of CVEs by Date",
+            y="Cumulative CVEs",
+            title="Cumulative Number of CVEs by Date",
         )
-
         self._normalize(fig)
         path = self._save_figure(fig, "cve_by_date_chart.png")
         return path
@@ -296,15 +314,19 @@ class ChartGenerator:
         every_df = [self.df] + self.old_dfs.copy()
         every_df = every_df[::-1]
         data = []
+        charts_colors = self.PRIORITY_COLORS.copy()
+        charts_colors["Total"] = "#000000"
         for i, df in enumerate(every_df):
-            # Count P0 even if there is no P0 cve
             priority_counts = (
                 df["Priority"]
                 .value_counts()
-                .reindex(list(self.PRIORITY_COLORS.keys()), fill_value=0)
+                .reindex(list(charts_colors.keys()), fill_value=0)
             )
             priority_counts = priority_counts.reset_index()
             priority_counts.columns = ["Priority", "Number of CVEs"]
+            priority_counts.loc[
+                priority_counts["Priority"] == "Total", "Number of CVEs"
+            ] = priority_counts["Number of CVEs"].sum()
             priority_counts["Scan"] = f"Scan {1+i-len(every_df)}"
             data.append(priority_counts)
 
@@ -317,15 +339,13 @@ class ChartGenerator:
             title="Number of CVEs by Priority in each Scan",
             text="Number of CVEs",
         )
-        fig.update_traces(textposition="top center")
+        fig.update_traces(textposition="top left")
         fig.update_yaxes(type="log")
         fig.update_yaxes(tickvals=[10**i for i in range(1, 8)])
         # Set the colors of the lines to the priority colors
-        for i, priority in enumerate(self.PRIORITY_COLORS.keys()):
+        for i, priority in enumerate(charts_colors.keys()):
             fig.for_each_trace(
-                lambda trace: trace.update(
-                    line=dict(color=self.PRIORITY_COLORS[trace.name])
-                )
+                lambda trace: trace.update(line=dict(color=charts_colors[trace.name]))
             )
         self._normalize(fig)
         path = self._save_figure(fig, "cve_by_scan_chart.png")
@@ -333,13 +353,13 @@ class ChartGenerator:
 
     # with every df in old_dfs, we can generate a chart with the mean of the cvss computed score for each scan
     # the x-axis is the df index and the y-axis is the mean of the cvss computed score
-    def generate_mean_cvss_by_scan_chart(self):
+    def generate_mean_cvss_by_scan_chart(self, score_col="CVSS Computed Score"):
         every_df = [self.df] + self.old_dfs.copy()
         every_df = every_df[::-1]
         data = []
         for i, df in enumerate(every_df):
             # round the mean to 2 decimals
-            mean_cvss = df["CVSS Computed Score"].mean()
+            mean_cvss = df[score_col].mean()
             mean_cvss = round(mean_cvss, 2)
             data.append({"Scan": f"Scan {1+i-len(every_df)}", "Mean CVSS": mean_cvss})
         data = pd.DataFrame(data)
